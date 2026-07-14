@@ -1,5 +1,7 @@
 # 📜 Contract Analysis Pipeline (CUAD)
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-contract--analysis--pipeline.onrender.com-0058be?style=for-the-badge&logo=render)](https://contract-analysis-pipeline.onrender.com/)
+
 An LLM-powered pipeline that reads legal contracts, extracts key clauses, and generates concise summaries — built on the [CUAD dataset](https://www.atticusprojectai.org/cuad).
 
 > **What it does:** Give it 50 contracts → it gives you back a clean CSV/JSON with the **termination**, **confidentiality**, and **liability** clauses of each, plus a 100–150 word summary.
