@@ -12,3 +12,7 @@ tiktoken>=0.7.0                 # token counting for safe chunking
 tqdm>=4.66.0                    # progress bars
 numpy>=1.26.0                   # cosine similarity for semantic search
 requests>=2.31.0                # dataset download
+
+# Web UI
+fastapi>=0.100.0
+uvicorn>=0.23.0                   # API Server
