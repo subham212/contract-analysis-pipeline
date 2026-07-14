@@ -18,13 +18,26 @@ import sys
 from src.config import settings
 from src.logger import get_logger
 from src.pipeline import run_pipeline
+from src.output_writer import merge_batches
 
 log = get_logger(__name__)
 
 
 def cmd_run(args):
-    """Run the full extraction + summarization pipeline."""
-    results = run_pipeline(max_contracts=args.max, skip_download=args.skip_download)
+    """Run the extraction + summarization pipeline (optionally batched)."""
+    batch_tag = None
+    if args.batch:
+        if args.batch.isdigit():
+            batch_tag = f"batch_{int(args.batch):02d}"
+        else:
+            batch_tag = args.batch
+
+    results = run_pipeline(
+        max_contracts=args.max,
+        skip_download=args.skip_download,
+        offset=args.offset,
+        batch_tag=batch_tag,
+    )
 
     # Print a compact summary table for the console
     print("\n" + "=" * 70)
@@ -67,14 +80,27 @@ def cmd_search(args):
         print(f"   {h.text[:200]}{'...' if len(h.text) > 200 else ''}\n")
 
 
+def cmd_merge(args):
+    """Merge all batch_*.json files into final consolidated CSV + JSON."""
+    csv_path, json_path = merge_batches()
+    print(f"\nMerged all batches into:")
+    print(f"  CSV : {csv_path}")
+    print(f"  JSON: {json_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="LLM-powered contract analysis pipeline (CUAD dataset)."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_run = sub.add_parser("run", help="Run the full pipeline.")
-    p_run.add_argument("--max", type=int, default=None, help="Max contracts to process.")
+    p_run = sub.add_parser("run", help="Run the pipeline (optionally in batches).")
+    p_run.add_argument("--max", type=int, default=2,
+                       help="Number of contracts to process in this run (default: 2).")
+    p_run.add_argument("--offset", type=int, default=0,
+                       help="Skip the first N contracts (for batched runs).")
+    p_run.add_argument("--batch", type=str, default=None,
+                       help="Batch tag (e.g. '01', '02'). Saves to output/batch_NN.csv/json.")
     p_run.add_argument("--skip-download", action="store_true", help="Skip dataset download.")
     p_run.set_defaults(func=cmd_run)
 
@@ -82,6 +108,9 @@ def main():
     p_search.add_argument("query", help="Natural-language query.")
     p_search.add_argument("--top", type=int, default=5, help="Number of results.")
     p_search.set_defaults(func=cmd_search)
+
+    p_merge = sub.add_parser("merge", help="Merge all batch files into final CSV + JSON.")
+    p_merge.set_defaults(func=cmd_merge)
 
     args = parser.parse_args()
     args.func(args)

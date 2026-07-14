@@ -12,8 +12,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env once at import time
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# Load .env once at import time.
+# override=True is CRITICAL: without it, python-dotenv will NOT replace
+# environment variables that already exist in the OS env (e.g. a stale key
+# exported in an earlier terminal session). This caused a real bug where the
+# .env had a fresh OpenRouter key but the code kept reading an old cached key.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 # ─── Dataset sources (verified, never guess) ─────────────────────
 CUAD_ZIP_URL = "https://github.com/TheAtticusProject/cuad/raw/main/data.zip"
@@ -46,6 +50,13 @@ class Settings:
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", ""))
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", ""))
+
+    # ─── Provider control ───
+    # Comma-separated order of providers to try. Lets you skip a dead provider
+    # without removing its key. e.g. "openai-compat" or "gemini,openai-compat"
+    provider_order: str = field(
+        default_factory=lambda: os.getenv("PROVIDER_ORDER", "gemini,openai-compat")
+    )
 
     # ─── Pipeline ───
     max_contracts: int = field(default_factory=lambda: _get_int("MAX_CONTRACTS", 50))

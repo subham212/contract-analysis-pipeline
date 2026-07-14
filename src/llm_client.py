@@ -28,9 +28,17 @@ log = get_logger(__name__)
 _TRANSIENT_RETRIES = 2
 _RETRY_DELAY_SEC = 1.5
 
-# Minimum seconds between calls to a provider (to respect free-tier rate limits).
-# Gemini free tier = 5 requests/min → we pace at ~12s between calls.
-_MIN_CALL_INTERVAL_SEC = 12.0
+# Minimum seconds between calls (to respect free-tier rate limits).
+# Set per-provider: free tiers are stricter; paid/fast endpoints can go faster.
+_PACING = {
+    "gemini": 12.0,        # Gemini free tier: 5 RPM → 12s between calls
+    "openai-compat": 1.5,  # NVIDIA NIM free tier: 40 RPM → 1.5s is safe
+}
+
+
+def _min_call_interval(provider_name: str) -> float:
+    """Return the minimum seconds between calls for a given provider."""
+    return _PACING.get(provider_name, 2.0)
 
 
 def _extract_retry_seconds(err_msg: str) -> float:
@@ -138,6 +146,14 @@ class OpenAICompatProvider:
             kwargs = {"api_key": settings.openai_api_key}
             if settings.openai_base_url:
                 kwargs["base_url"] = settings.openai_base_url
+            # OpenRouter requires identification headers per their policy.
+            # We add them via default_headers (harmless for other providers).
+            base = settings.openai_base_url.lower()
+            if "openrouter.ai" in base:
+                kwargs["default_headers"] = {
+                    "HTTP-Referer": "https://github.com/contract-analysis-pipeline",
+                    "X-Title": "Contract Analysis Pipeline",
+                }
             self._client = OpenAI(**kwargs)
         return self._client
 
@@ -156,7 +172,7 @@ class OpenAICompatProvider:
             return resp.choices[0].message.content or ""
         except Exception as exc:
             msg = str(exc).lower()
-            if any(k in msg for k in ("quota", "rate", "429", "insufficient")):
+            if any(k in msg for k in ("quota", "rate", "429", "insufficient", "temporarily rate-limited")):
                 raise QuotaExhaustedError(f"OpenAI-compat quota/rate limit: {exc}") from exc
             raise LLMError(f"OpenAI-compat error: {exc}") from exc
 
@@ -175,22 +191,37 @@ class LLMRouter:
         self.last_provider: Optional[str] = None
         self._last_call_ts: float = 0.0  # for rate-limit pacing
 
-        # Build the chain based on what's configured
-        if settings.gemini_api_key:
-            try:
-                self.providers.append(GeminiProvider())
-                log.info("LLM provider registered: Gemini (%s)", settings.gemini_model)
-            except LLMError as exc:
-                log.warning("Gemini not available: %s", exc)
+        # Available provider constructors, keyed by name
+        factories = {
+            "gemini": lambda: (
+                GeminiProvider()
+                if settings.gemini_api_key
+                else (_ for _ in ()).throw(LLMError("GEMINI_API_KEY not set"))
+            ),
+            "openai-compat": lambda: (
+                OpenAICompatProvider()
+                if settings.openai_api_key
+                else (_ for _ in ()).throw(LLMError("OPENAI_API_KEY not set"))
+            ),
+        }
 
-        if settings.openai_api_key:
+        # Build the chain in the configured order
+        order = [p.strip() for p in settings.provider_order.split(",") if p.strip()]
+        for name in order:
+            if name not in factories:
+                log.warning("Unknown provider '%s' in PROVIDER_ORDER, skipping.", name)
+                continue
             try:
-                self.providers.append(OpenAICompatProvider())
-                base = settings.openai_base_url or "api.openai.com"
-                log.info("LLM provider registered: OpenAI-compat (%s @ %s)",
-                         settings.openai_model, base)
+                provider = factories[name]()
+                self.providers.append(provider)
+                if name == "gemini":
+                    log.info("LLM provider registered: Gemini (%s)", settings.gemini_model)
+                else:
+                    base = settings.openai_base_url or "api.openai.com"
+                    log.info("LLM provider registered: OpenAI-compat (%s @ %s)",
+                             settings.openai_model, base)
             except LLMError as exc:
-                log.warning("OpenAI-compat not available: %s", exc)
+                log.warning("%s not available: %s", name, exc)
 
         if not self.providers:
             raise LLMError(
@@ -200,12 +231,12 @@ class LLMRouter:
 
         log.info("Failover chain: %s", " → ".join(p.name for p in self.providers))
 
-    def _pace(self) -> None:
-        """Sleep just enough to stay under the per-minute rate limit."""
+    def _pace(self, provider_name: str = "openai-compat") -> None:
+        """Sleep just enough to stay under this provider's rate limit."""
         elapsed = time.time() - self._last_call_ts
-        wait = _MIN_CALL_INTERVAL_SEC - elapsed
+        wait = _min_call_interval(provider_name) - elapsed
         if wait > 0:
-            log.debug("Rate-limit pacing: sleeping %.1fs", wait)
+            log.debug("Rate-limit pacing (%s): sleeping %.1fs", provider_name, wait)
             time.sleep(wait)
         self._last_call_ts = time.time()
 
@@ -221,7 +252,7 @@ class LLMRouter:
 
         for provider in self.providers:
             for attempt in range(1, max_retries_per_provider + 1):
-                self._pace()  # respect free-tier rate limits before each call
+                self._pace(provider.name)  # respect this provider's rate limit
                 start = time.time()
                 try:
                     out = provider.generate(prompt, system=system)

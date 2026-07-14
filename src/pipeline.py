@@ -17,12 +17,12 @@ from typing import Optional
 
 from tqdm import tqdm
 
-from .chunker import chunk_text, estimate_tokens
+from .chunker import chunk_text
 from .config import settings
 from .data_loader import ContractRecord, download_cuad, load_contracts, select_contracts
 from .llm_client import LLMError, get_router
 from .logger import get_logger
-from .output_writer import ContractResult, write_latest_symlink
+from .output_writer import ContractResult, write_batch, write_latest_symlink
 from .prompts import SYSTEM_PROMPT, get_extraction_prompt, get_summary_prompt
 
 log = get_logger(__name__)
@@ -139,16 +139,28 @@ def process_contract(record: ContractRecord, router) -> ContractResult:
 
 # ─── Full pipeline run ───────────────────────────────────────────
 
-def run_pipeline(max_contracts: Optional[int] = None, skip_download: bool = False) -> list[ContractResult]:
+def run_pipeline(
+    max_contracts: Optional[int] = None,
+    skip_download: bool = False,
+    offset: int = 0,
+    batch_tag: Optional[str] = None,
+) -> list[ContractResult]:
     """
     Run the full pipeline end-to-end.
 
     Args:
         max_contracts: override settings.max_contracts.
-        skip_download: if True, assume PDFs are already present.
+        skip_download: if True, assume dataset is already present.
+        offset: skip the first `offset` contracts (for batched processing).
+        batch_tag: if set, save outputs under a batch-specific name
+                   (e.g. batch_03) so runs don't overwrite each other.
     """
     log.info("=" * 64)
     log.info("Contract Analysis Pipeline — starting")
+    if offset:
+        log.info("Batch mode: offset=%d", offset)
+    if batch_tag:
+        log.info("Batch tag: %s", batch_tag)
     log.info("=" * 64)
 
     problems = settings.validate()
@@ -161,7 +173,9 @@ def run_pipeline(max_contracts: Optional[int] = None, skip_download: bool = Fals
     if not skip_download:
         download_cuad()
     records = load_contracts()
-    contracts = select_contracts(records, count=max_contracts or settings.max_contracts)
+    contracts = select_contracts(
+        records, count=max_contracts or settings.max_contracts, offset=offset
+    )
     log.info("Processing %d contracts...", len(contracts))
 
     # 2. Init LLM router (failover chain)
@@ -182,8 +196,11 @@ def run_pipeline(max_contracts: Optional[int] = None, skip_download: bool = Fals
             )
         results.append(res)
 
-    # 4. Write outputs
-    csv_path, json_path = write_latest_symlink(results)
+    # 4. Write outputs (batch-specific if tagged, else latest)
+    if batch_tag:
+        csv_path, json_path = write_batch(results, batch_tag)
+    else:
+        csv_path, json_path = write_latest_symlink(results)
     log.info("Pipeline complete. %d/%d contracts processed without error.",
              sum(1 for r in results if not r.errors), len(results))
     log.info("Results: %s | %s", csv_path, json_path)

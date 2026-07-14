@@ -24,9 +24,11 @@ log = get_logger(__name__)
 # Rough heuristic: 1 token ≈ 4 characters of English text.
 CHARS_PER_TOKEN = 4
 
-# Conservative defaults that fit comfortably inside most models.
-DEFAULT_CHUNK_TOKENS = 6_000       # ~24,000 characters
-DEFAULT_OVERLAP_TOKENS = 400       # ~1,600 characters of overlap
+# Default chunk size. Larger chunks = fewer API calls = faster + cheaper.
+# deepseek-v4-flash supports 1M tokens; llama-3.3-70b supports 128K.
+# 25K tokens (~100K chars) fits most CUAD contracts in 1-2 chunks.
+DEFAULT_CHUNK_TOKENS = 25_000      # ~100,000 characters
+DEFAULT_OVERLAP_TOKENS = 800       # ~3,200 characters of overlap
 
 
 @dataclass

@@ -127,9 +127,15 @@ def load_contracts(cuad_json_path: Path | None = None) -> list[ContractRecord]:
 def select_contracts(
     records: list[ContractRecord] | None = None,
     count: int | None = None,
+    offset: int = 0,
 ) -> list[ContractRecord]:
     """
     Select a deterministic subset of N contracts (sorted for reproducibility).
+
+    Args:
+        records: full list of contracts (loaded if None).
+        count: how many contracts to select.
+        offset: skip the first `offset` contracts (for batched processing).
 
     Reproducibility note: sorting the titles guarantees the same N
     contracts are selected on every run, which matters for HR reviewers
@@ -140,9 +146,9 @@ def select_contracts(
     count = count or settings.max_contracts
 
     sorted_records = sorted(records, key=lambda r: r.title)
-    selected = sorted_records[:count]
-    log.info("Selected %d of %d contracts (deterministic, sorted by title).",
-             len(selected), len(records))
+    selected = sorted_records[offset:offset + count]
+    log.info("Selected %d contracts (offset=%d, count=%d) from %d total.",
+             len(selected), offset, count, len(records))
     return selected
 
 
