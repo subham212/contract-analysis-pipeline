@@ -40,8 +40,10 @@ output/fix_*.json
 output/fill_*.csv
 output/fill_*.json
 output/*.log
-# NOTE: final_contracts.csv, final_contracts.json, semantic_index.json
-# are NOT ignored → they WILL be uploaded to GitHub as deliverables.
+output/chroma_db/
+output/rag_summaries_cache.json
+# NOTE: final_contracts.csv and final_contracts.json
+# are NOT ignored -> they WILL be uploaded to GitHub as deliverables.
 
 # ─── Logs ────────────────────────────────────────────────────────
 *.log

@@ -4,9 +4,9 @@ pipeline.py
 The orchestrator. Ties together every module into a clean end-to-end flow.
 
 Flow:
-    load PDFs → extract text → clean → chunk →
-    (per chunk) extract clauses → (merge) → summarize →
-    collect results → write CSV/JSON → (optional) build semantic index
+    load PDFs -> extract text -> clean -> chunk ->
+    (per chunk) extract clauses -> (merge) -> summarize ->
+    collect results -> write CSV/JSON
 """
 from __future__ import annotations
 
@@ -204,17 +204,4 @@ def run_pipeline(
     log.info("Pipeline complete. %d/%d contracts processed without error.",
              sum(1 for r in results if not r.errors), len(results))
     log.info("Results: %s | %s", csv_path, json_path)
-
-    # 5. Bonus: semantic search index
-    if settings.enable_semantic_search:
-        try:
-            from .semantic_search import SemanticSearcher
-            searcher = SemanticSearcher()
-            searcher.build_index([r.__dict__ for r in results])
-            index_path = settings.output_dir / "semantic_index.json"
-            searcher.save_index(index_path)
-            log.info("Semantic search index built (%d clauses).", len(searcher.clauses))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Semantic search skipped: %s", exc)
-
     return results

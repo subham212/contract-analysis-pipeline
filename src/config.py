@@ -21,13 +21,6 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 # ─── Dataset sources (verified, never guess) ─────────────────────
 CUAD_ZIP_URL = "https://github.com/TheAtticusProject/cuad/raw/main/data.zip"
-CUAD_SEED_ZIP_URL = "https://github.com/TheAtticusProject/cuad/raw/main/seed.xlsx"
-
-
-def _get_bool(key: str, default: bool = False) -> bool:
-    """Parse a boolean env var."""
-    val = os.getenv(key, str(default)).strip().lower()
-    return val in ("1", "true", "yes", "y", "on")
 
 
 def _get_int(key: str, default: int) -> int:
@@ -42,37 +35,26 @@ def _get_int(key: str, default: int) -> int:
 class Settings:
     """All runtime settings, loaded from environment."""
 
-    # ─── LLM: Primary (Gemini) ───
-    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
-
-    # ─── LLM: Fallback (OpenAI-compatible) ───
+    # ─── LLM & Embeddings (ZenMux / OpenAI-compatible) ───
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
-    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", ""))
-    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", ""))
+    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://zenmux.ai/api/v1"))
+    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "deepseek/deepseek-v4.1-flash"))
+    openai_embedding_model: str = field(
+        default_factory=lambda: os.getenv("OPENAI_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+    )
 
     # ─── Provider control ───
-    # Comma-separated order of providers to try. Lets you skip a dead provider
-    # without removing its key. e.g. "openai-compat" or "gemini,openai-compat"
     provider_order: str = field(
-        default_factory=lambda: os.getenv("PROVIDER_ORDER", "gemini,openai-compat")
+        default_factory=lambda: os.getenv("PROVIDER_ORDER", "openai-compat")
     )
 
     # ─── Pipeline ───
     max_contracts: int = field(default_factory=lambda: _get_int("MAX_CONTRACTS", 50))
-    contracts_dir: Path = field(
-        default_factory=lambda: Path(
-            os.getenv("CONTRACTS_DIR", "data/raw/contracts")
-        ).resolve()
-    )
     output_dir: Path = field(
         default_factory=lambda: Path(os.getenv("OUTPUT_DIR", "output")).resolve()
     )
     extraction_mode: str = field(
         default_factory=lambda: os.getenv("EXTRACTION_MODE", "zero_shot").lower()
-    )
-    enable_semantic_search: bool = field(
-        default_factory=lambda: _get_bool("ENABLE_SEMANTIC_SEARCH", True)
     )
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 
@@ -84,9 +66,9 @@ class Settings:
     def validate(self) -> list[str]:
         """Return a list of human-readable problems (empty = OK)."""
         problems: list[str] = []
-        if not self.gemini_api_key and not self.openai_api_key:
+        if not self.openai_api_key:
             problems.append(
-                "No LLM API key found. Set GEMINI_API_KEY and/or OPENAI_API_KEY in .env"
+                "No LLM API key found. Set OPENAI_API_KEY in your .env file."
             )
         if self.extraction_mode not in ("zero_shot", "few_shot"):
             problems.append(

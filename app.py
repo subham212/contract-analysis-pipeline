@@ -12,14 +12,10 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 import uvicorn
-import numpy as np
-
-from src.semantic_search import SemanticSearcher
 
 # ── Paths & Data ─────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent
 CONTRACTS_JSON = ROOT / "output" / "final_contracts.json"
-SEMANTIC_INDEX_JSON = ROOT / "output" / "semantic_index.json"
 
 def _load_contracts() -> list[dict[str, Any]]:
     if not CONTRACTS_JSON.exists():
@@ -27,24 +23,7 @@ def _load_contracts() -> list[dict[str, Any]]:
     data = json.loads(CONTRACTS_JSON.read_text(encoding="utf-8"))
     return data.get("results", [])
 
-def _load_searcher() -> SemanticSearcher | None:
-    if not SEMANTIC_INDEX_JSON.exists():
-        return None
-    try:
-        data = json.loads(SEMANTIC_INDEX_JSON.read_text(encoding="utf-8"))
-        searcher = SemanticSearcher()
-        searcher.clauses = data.get("clauses", [])
-        embeddings = data.get("embeddings", [])
-        if embeddings:
-            searcher.embeddings = np.array(embeddings, dtype=np.float32)
-        else:
-            searcher.embeddings = np.zeros((0, 768), dtype=np.float32)
-        return searcher
-    except Exception:
-        return None
-
 CONTRACTS: list[dict[str, Any]] = _load_contracts()
-SEARCHER: SemanticSearcher | None = _load_searcher()
 _CONTRACT_MAP: dict[str, dict[str, Any]] = {c["contract_id"]: c for c in CONTRACTS}
 
 # ── FastAPI App ──────────────────────────────────────────────────────
@@ -79,25 +58,60 @@ def get_contract(contract_id: str) -> dict[str, Any]:
         "liability_clause": c.get("liability_clause", "Not found")
     }
 
-@app.get("/api/search")
-def search_contracts(q: str = Query(..., min_length=1), top_k: int = Query(5, ge=1, le=20)) -> list[dict[str, Any]]:
-    """
-    Perform a semantic search query across all extracted clauses in the dataset.
-    Returns the top_k best matching clauses and their similarity scores.
-    """
-    if SEARCHER is None:
-        raise HTTPException(status_code=503, detail="Semantic index not available.")
-    
-    hits = SEARCHER.query(q.strip(), top_k=top_k)
-    results = []
-    for hit in hits:
-        results.append({
-            "contract_id": hit.contract_id,
-            "clause_type": hit.clause_type,
-            "score": round(hit.score * 100, 1),
-            "text": hit.text
-        })
-    return results
+
+# ── RAG Endpoint ─────────────────────────────────────────────────────
+RAG_ENGINE = None
+
+def _get_rag_engine():
+    global RAG_ENGINE
+    if RAG_ENGINE is None:
+        from src.rag.engine import ContractRAGEngine
+        RAG_ENGINE = ContractRAGEngine()
+    return RAG_ENGINE
+
+@app.post("/api/rag/ask")
+def api_rag_ask(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ask an arbitrary question across indexed contracts with citation backing."""
+    q = (payload.get("query") or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    top_k = int(payload.get("top_k", 3))
+    contract_id = payload.get("contract_id") or None
+    engine = _get_rag_engine()
+
+    # If ChromaDB is empty on first boot, index initial contracts
+    if engine.vector_store.count() == 0 and CONTRACTS:
+        for c in CONTRACTS[:5]:
+            synth = (
+                f"CONTRACT: {c['contract_id']}\n\n"
+                f"EXECUTIVE SUMMARY:\n{c.get('summary', '')}\n\n"
+                f"TERMINATION:\n{c.get('termination_clause', '')}\n\n"
+                f"CONFIDENTIALITY:\n{c.get('confidentiality_clause', '')}\n\n"
+                f"LIABILITY:\n{c.get('liability_clause', '')}"
+            )
+            engine.index_contract(c["contract_id"], synth)
+
+    resp = engine.ask(q, top_k=top_k, filter_contract=contract_id)
+    return {
+        "query": resp.query,
+        "answer": resp.answer,
+        "provider": resp.provider,
+        "model": resp.model,
+        "citations": [
+            {
+                "contract_title": c.contract_title,
+                "section_title": c.section_title,
+                "score": round(c.score * 100, 1),
+                "raw_excerpt": c.raw_excerpt,
+                "summary": c.summary,
+            }
+            for c in resp.citations
+        ]
+    }
+
+@app.get("/api/rag/ask")
+def api_rag_ask_get(q: str = Query(..., min_length=1), top_k: int = Query(3, ge=1, le=10)):
+    return api_rag_ask({"query": q, "top_k": top_k})
 
 
 # ── Frontend HTML/CSS/JS ─────────────────────────────────────────────
@@ -216,9 +230,9 @@ HTML_CONTENT = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><me
             <span class="material-symbols-outlined">folder_open</span>
             <span class="font-label-md text-label-md">Browse Contracts</span>
         </button>
-        <button onclick="switchView('search')" id="nav-search" class="w-full flex items-center space-x-3 p-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-transform duration-200 hover:translate-x-1">
-            <span class="material-symbols-outlined">manage_search</span>
-            <span class="font-label-md text-label-md">Semantic Search</span>
+        <button onclick="switchView('rag')" id="nav-rag" class="w-full flex items-center space-x-3 p-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-transform duration-200 hover:translate-x-1">
+            <span class="material-symbols-outlined">psychology</span>
+            <span class="font-label-md text-label-md">AI Legal Assistant</span>
         </button>
     </nav>
 </aside>
@@ -240,13 +254,13 @@ HTML_CONTENT = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><me
         <div class="flex md:hidden justify-center mb-2">
             <div class="flex bg-surface-container-high rounded-xl p-1 shadow-inner w-full max-w-sm">
                 <button onclick="switchView('browse')" id="nav-browse-mobile" class="flex-1 py-2 bg-surface-container-lowest text-primary rounded-lg font-bold text-sm shadow-sm transition-colors text-center">Browse</button>
-                <button onclick="switchView('search')" id="nav-search-mobile" class="flex-1 py-2 text-on-surface-variant rounded-lg font-bold text-sm transition-colors text-center">Search</button>
+                <button onclick="switchView('rag')" id="nav-rag-mobile" class="flex-1 py-2 text-on-surface-variant rounded-lg font-bold text-sm transition-colors text-center">Ask AI</button>
             </div>
         </div>
         
         <!-- BROWSE VIEW -->
         <div id="view-browse" class="view-content active">
-            <!-- SEARCH SELECT DROPDOWN -->
+            <!-- CONTRACT SELECT DROPDOWN -->
             <section class="w-full mb-8">
                 <div class="relative w-full max-w-2xl mx-auto group">
                     <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
@@ -266,27 +280,37 @@ HTML_CONTENT = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><me
             </div>
         </div>
 
-        <!-- SEARCH VIEW -->
-        <div id="view-search" class="view-content">
-            <div class="w-full mb-8">
-                <div class="flex flex-col md:flex-row gap-4 max-w-4xl mx-auto">
+        <!-- RAG VIEW -->
+        <div id="view-rag" class="view-content">
+            <div class="w-full mb-6 max-w-4xl mx-auto">
+                <div class="flex flex-col md:flex-row gap-4">
                     <div class="relative flex-1">
                         <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                            <span class="material-symbols-outlined text-secondary">search</span>
+                            <span class="material-symbols-outlined text-secondary">psychology</span>
                         </div>
-                        <input type="text" id="search-query" placeholder="e.g., termination for cause..." onkeypress="handleEnter(event)" class="block w-full pl-12 pr-4 py-4 bg-surface-container-lowest border border-outline-variant/50 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-secondary/10 focus:border-secondary font-body-md text-body-md transition-all">
+                        <input type="text" id="rag-query" placeholder="Ask any question across contracts (e.g., notice required to terminate?)..." onkeypress="handleRAGEnter(event)" class="block w-full pl-12 pr-4 py-4 bg-surface-container-lowest border border-outline-variant/50 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-secondary/10 focus:border-secondary font-body-md text-body-md transition-all">
                     </div>
                     <div class="flex items-center gap-4">
-                        <label for="search-top-k" class="font-label-md text-on-surface-variant whitespace-nowrap">Top K:</label>
-                        <input type="number" id="search-top-k" value="5" min="1" max="20" class="w-20 px-4 py-4 bg-surface-container-lowest border border-outline-variant/50 rounded-xl shadow-sm text-center">
-                        <button onclick="performSearch()" id="search-btn" class="px-8 py-4 bg-secondary text-on-secondary rounded-xl font-bold hover:bg-secondary-container transition-colors shadow-sm">Search</button>
+                        <label for="rag-top-k" class="font-label-md text-on-surface-variant whitespace-nowrap">Sources:</label>
+                        <input type="number" id="rag-top-k" value="3" min="1" max="10" class="w-20 px-4 py-4 bg-surface-container-lowest border border-outline-variant/50 rounded-xl shadow-sm text-center">
+                        <button onclick="askRAG()" id="rag-btn" class="px-8 py-4 bg-secondary text-on-secondary rounded-xl font-bold hover:bg-secondary-container transition-colors shadow-sm flex items-center gap-2">
+                            <span class="material-symbols-outlined text-sm">auto_awesome</span> Ask AI
+                        </button>
                     </div>
+                </div>
+
+                <!-- SUGGESTED QUERIES -->
+                <div class="flex flex-wrap gap-2 mt-4 items-center">
+                    <span class="font-label-sm text-xs text-on-surface-variant opacity-80">Suggested:</span>
+                    <button onclick="setRAGQuery('What is the notice period required to terminate without cause?')" class="px-3 py-1 bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant rounded-full font-label-sm text-xs transition-colors">Notice to terminate?</button>
+                    <button onclick="setRAGQuery('What are the limitations of liability and damage caps?')" class="px-3 py-1 bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant rounded-full font-label-sm text-xs transition-colors">Liability caps?</button>
+                    <button onclick="setRAGQuery('What information is excluded from confidentiality obligations?')" class="px-3 py-1 bg-surface-container-high hover:bg-surface-container-highest text-on-surface-variant rounded-full font-label-sm text-xs transition-colors">Confidentiality exclusions?</button>
                 </div>
             </div>
 
-            <div id="search-results" class="space-y-6 max-w-4xl mx-auto">
+            <div id="rag-results" class="space-y-6 max-w-4xl mx-auto">
                 <div class="text-center text-on-surface-variant p-20 border border-outline-variant/30 rounded-xl bg-surface-container-lowest shadow-sm">
-                    Enter a query above to semantically search across all clauses.
+                    Ask any legal or operational question above. The AI will retrieve the exact contract sections and synthesize a citation-backed answer.
                 </div>
             </div>
         </div>
@@ -297,12 +321,13 @@ HTML_CONTENT = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><me
 <script>
     function switchView(viewName) {
         document.querySelectorAll('.view-content').forEach(el => el.classList.remove('active'));
-        document.getElementById(`view-${viewName}`).classList.add('active');
+        const targetView = document.getElementById(`view-${viewName}`);
+        if (targetView) targetView.classList.add('active');
         
         const navBrowse = document.getElementById('nav-browse');
-        const navSearch = document.getElementById('nav-search');
+        const navRag = document.getElementById('nav-rag');
         const navBrowseMob = document.getElementById('nav-browse-mobile');
-        const navSearchMob = document.getElementById('nav-search-mobile');
+        const navRagMob = document.getElementById('nav-rag-mobile');
         
         const activeDesktop = 'w-full flex items-center space-x-3 p-3 bg-secondary text-on-secondary rounded-lg font-bold transition-all duration-200';
         const inactiveDesktop = 'w-full flex items-center space-x-3 p-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg transition-transform duration-200 hover:translate-x-1';
@@ -310,16 +335,15 @@ HTML_CONTENT = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><me
         const activeMobile = 'flex-1 py-2 bg-surface-container-lowest text-primary rounded-lg font-bold text-sm shadow-sm transition-colors text-center';
         const inactiveMobile = 'flex-1 py-2 text-on-surface-variant rounded-lg font-bold text-sm transition-colors text-center';
 
-        if(viewName === 'browse') {
-            if(navBrowse) navBrowse.className = activeDesktop;
-            if(navSearch) navSearch.className = inactiveDesktop;
-            if(navBrowseMob) navBrowseMob.className = activeMobile;
-            if(navSearchMob) navSearchMob.className = inactiveMobile;
-        } else {
-            if(navSearch) navSearch.className = activeDesktop;
-            if(navBrowse) navBrowse.className = inactiveDesktop;
-            if(navSearchMob) navSearchMob.className = activeMobile;
-            if(navBrowseMob) navBrowseMob.className = inactiveMobile;
+        [navBrowse, navRag].forEach(el => { if(el) el.className = inactiveDesktop; });
+        [navBrowseMob, navRagMob].forEach(el => { if(el) el.className = inactiveMobile; });
+
+        if (viewName === 'browse') {
+            if (navBrowse) navBrowse.className = activeDesktop;
+            if (navBrowseMob) navBrowseMob.className = activeMobile;
+        } else if (viewName === 'rag') {
+            if (navRag) navRag.className = activeDesktop;
+            if (navRagMob) navRagMob.className = activeMobile;
         }
     }
 
@@ -424,50 +448,80 @@ HTML_CONTENT = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><me
         }
     }
 
-    function handleEnter(e) { if (e.key === 'Enter') performSearch(); }
-    
-    async function performSearch() {
-        const query = document.getElementById('search-query').value.trim();
-        const top_k = document.getElementById('search-top-k').value || 5;
-        const resultsDiv = document.getElementById('search-results');
-        const btn = document.getElementById('search-btn');
+    function handleRAGEnter(e) { if (e.key === 'Enter') askRAG(); }
+    function setRAGQuery(q) {
+        document.getElementById('rag-query').value = q;
+        askRAG();
+    }
+
+    async function askRAG() {
+        const query = document.getElementById('rag-query').value.trim();
+        const top_k = document.getElementById('rag-top-k').value || 3;
+        const resultsDiv = document.getElementById('rag-results');
+        const btn = document.getElementById('rag-btn');
 
         if (!query) return;
-        btn.disabled = true; btn.textContent = "Searching...";
-        resultsDiv.innerHTML = `<div class="text-center text-on-surface-variant p-20 border border-outline-variant/30 rounded-xl bg-surface-container-lowest shadow-sm">Searching...</div>`;
+        btn.disabled = true;
+        btn.innerHTML = `<span class="material-symbols-outlined text-sm animate-spin">refresh</span> Thinking...`;
+        resultsDiv.innerHTML = `<div class="text-center text-on-surface-variant p-20 border border-outline-variant/30 rounded-xl bg-surface-container-lowest shadow-sm flex flex-col items-center gap-3">
+            <span class="material-symbols-outlined text-secondary text-3xl animate-spin">refresh</span>
+            <span>Searching contract sections and synthesizing answer...</span>
+        </div>`;
 
         try {
-            const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&top_k=${top_k}`);
-            const hits = await res.json();
-            if (hits.length === 0) { 
-                resultsDiv.innerHTML = `<div class="text-center text-on-surface-variant p-20 border border-outline-variant/30 rounded-xl bg-surface-container-lowest shadow-sm">No results found.</div>`; 
-                return; 
+            const res = await fetch('/api/rag/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query, top_k: parseInt(top_k) })
+            });
+            const data = await res.json();
+            
+            let citationsHtml = '';
+            if (data.citations && data.citations.length > 0) {
+                data.citations.forEach((c, idx) => {
+                    citationsHtml += `
+                        <div class="border border-outline-variant/30 rounded-lg p-4 bg-surface-container-low/50">
+                            <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-2">
+                                <div class="font-headline-md text-sm font-semibold text-primary truncate">
+                                    [${idx+1}] ${c.contract_title} — ${c.section_title}
+                                </div>
+                                <span class="px-2.5 py-0.5 bg-secondary-fixed text-on-secondary-fixed-variant rounded-full text-xs font-label-sm w-fit">${c.score}% Match</span>
+                            </div>
+                            <details class="text-xs text-on-surface-variant cursor-pointer group">
+                                <summary class="font-label-sm text-secondary hover:underline select-none">View Verbatim Contract Excerpt (Way B)</summary>
+                                <div class="mt-2 p-3 bg-surface-container-lowest rounded border border-outline-variant/20 font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto legal-scroll whitespace-pre-wrap">${c.raw_excerpt}</div>
+                            </details>
+                        </div>
+                    `;
+                });
             }
 
-            let html = ``;
-            hits.forEach((hit, i) => {
-                let badge = '';
-                if (hit.clause_type === "termination") badge = `<span class="px-2 md:px-3 py-1 bg-error-container text-on-error-container rounded-full font-label-sm text-[10px] md:text-label-sm">🔴 Termination</span>`;
-                else if (hit.clause_type === "confidentiality") badge = `<span class="px-2 md:px-3 py-1 bg-tertiary-fixed text-on-tertiary-fixed-variant rounded-full font-label-sm text-[10px] md:text-label-sm">🟡 Confidentiality</span>`;
-                else badge = `<span class="px-2 md:px-3 py-1 bg-secondary-fixed text-on-secondary-fixed-variant rounded-full font-label-sm text-[10px] md:text-label-sm">🔵 Liability</span>`;
-
-                html += `
-                    <article class="bg-surface-container-lowest border border-outline-variant/30 rounded-xl shadow-sm p-4 md:p-6 hover:-translate-y-0.5 transition-transform duration-200">
-                        <div class="flex flex-col md:flex-row md:justify-between items-start md:items-center gap-2 md:gap-0 mb-4">
-                            <h4 class="font-headline-md text-primary text-sm md:text-lg break-words w-full md:w-auto">${i+1}. ${hit.contract_id}</h4>
-                            <div class="flex flex-wrap gap-2 shrink-0">
-                                ${badge}
-                                <span class="px-2 md:px-3 py-1 bg-surface-container-high text-on-surface-variant rounded-full font-label-sm text-[10px] md:text-label-sm">${hit.score}% Match</span>
-                            </div>
+            resultsDiv.innerHTML = `
+                <article class="bg-surface-container-lowest border border-outline-variant/30 rounded-xl shadow-sm overflow-hidden">
+                    <header class="px-6 py-4 bg-surface-container-low/60 border-b border-outline-variant/10 flex justify-between items-center">
+                        <div class="flex items-center space-x-2">
+                            <span class="material-symbols-outlined text-secondary" style="font-variation-settings: 'FILL' 1;">psychology</span>
+                            <h3 class="font-headline-md text-base md:text-lg font-bold text-on-surface">Synthesized Answer</h3>
                         </div>
-                        <p class="font-body-md text-on-surface-variant leading-relaxed">${hit.text}</p>
-                    </article>`;
-            });
-            resultsDiv.innerHTML = html;
-        } catch (e) { 
-            resultsDiv.innerHTML = `<div class="text-center text-error p-20 border border-outline-variant/30 rounded-xl bg-surface-container-lowest shadow-sm">Error searching.</div>`; 
-        } finally { 
-            btn.disabled = false; btn.textContent = "Search"; 
+                        <span class="px-3 py-1 bg-primary-fixed text-on-primary-fixed rounded-full font-label-sm text-xs flex items-center gap-1">
+                            <span class="material-symbols-outlined text-xs">auto_awesome</span> ${data.provider || 'ZenMux RAG'}
+                        </span>
+                    </header>
+                    <div class="p-6 md:p-8 space-y-6">
+                        <div class="font-body-lg text-sm md:text-base text-on-surface leading-relaxed whitespace-pre-line border-l-2 border-secondary pl-4">${data.answer}</div>
+                        
+                        <div>
+                            <h4 class="font-label-md text-xs font-bold text-on-surface-variant uppercase tracking-wider mb-3">Verified Sources & Citations (${data.citations ? data.citations.length : 0})</h4>
+                            <div class="space-y-3">${citationsHtml}</div>
+                        </div>
+                    </div>
+                </article>
+            `;
+        } catch (e) {
+            resultsDiv.innerHTML = `<div class="text-center text-error p-20 border border-outline-variant/30 rounded-xl bg-surface-container-lowest shadow-sm">Error generating answer: ${e}</div>`;
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = `<span class="material-symbols-outlined text-sm">auto_awesome</span> Ask AI`;
         }
     }
 

@@ -66,13 +66,10 @@ def write_results(results: list[ContractResult], output_dir: Path | None = None)
     json_path = output_dir / f"contracts_analysis_{timestamp}.json"
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "model": {
-            "primary": f"Gemini/{settings.gemini_model}" if settings.gemini_api_key else None,
-            "fallback": (
-                f"OpenAI-compat/{settings.openai_model}"
-                if settings.openai_api_key else None
-            ),
-        },
+        "model": (
+            f"OpenAI-compat/{settings.openai_model}"
+            if settings.openai_api_key else None
+        ),
         "extraction_mode": settings.extraction_mode,
         "total_contracts": len(results),
         "results": [asdict(r) for r in results],

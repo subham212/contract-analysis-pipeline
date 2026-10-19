@@ -2,17 +2,20 @@
 # PDF text extraction
 pdfplumber>=0.11.0
 
-# LLM providers
-google-genai>=0.3.0             # Google Gemini (primary) — new SDK
-openai>=1.30.0                  # OpenAI-compatible fallback
+# LLM & Embedding provider (ZenMux / OpenAI-compatible)
+openai>=1.30.0
 
 # Configuration & utilities
 python-dotenv>=1.0.0            # load .env files
-tiktoken>=0.7.0                 # token counting for safe chunking
 tqdm>=4.66.0                    # progress bars
-numpy>=1.26.0                   # cosine similarity for semantic search
+numpy>=1.26.0                   # vector operations for embeddings fallback
 requests>=2.31.0                # dataset download
 
 # Web UI
 fastapi>=0.100.0
 uvicorn>=0.23.0                   # API Server
+
+# Vector Database & RAG (Step 1)
+chromadb>=1.5.0                   # local persistent vector database
+langchain-core>=0.2.0             # document and metadata schema
+langchain-chroma>=0.1.0           # LangChain ChromaDB integration

@@ -1,16 +1,14 @@
 """
 llm_client.py
 =============
-Unified LLM client with automatic provider failover.
+Unified LLM client for contract intelligence.
 
-Failover chain (per request):
-    1. Google Gemini (primary)   ← huge context window, free tier
-    2. OpenAI-compatible         ← kicks in if Gemini errors / quota exhausted
+Primary Gateway:
+    - ZenMux / OpenAI-compatible (DeepSeek, Llama, OpenAI)
 
 Design principles:
   - Single unified interface: generate(prompt, system) -> str
-  - Auto-retry within a provider on transient errors.
-  - On quota / auth errors, fall through to the next provider.
+  - Auto-retry on transient errors & rate limits.
   - Never leak secrets: keys live only in settings, never logged.
 """
 from __future__ import annotations
@@ -28,17 +26,16 @@ log = get_logger(__name__)
 _TRANSIENT_RETRIES = 2
 _RETRY_DELAY_SEC = 1.5
 
-# Minimum seconds between calls (to respect free-tier rate limits).
-# Set per-provider: free tiers are stricter; paid/fast endpoints can go faster.
+# Minimum seconds between calls.
+# Set per-provider: fast endpoints like ZenMux can run at low latency.
 _PACING = {
-    "gemini": 12.0,        # Gemini free tier: 5 RPM → 12s between calls
-    "openai-compat": 1.5,  # NVIDIA NIM free tier: 40 RPM → 1.5s is safe
+    "openai-compat": 0.5,
 }
 
 
 def _min_call_interval(provider_name: str) -> float:
     """Return the minimum seconds between calls for a given provider."""
-    return _PACING.get(provider_name, 2.0)
+    return _PACING.get(provider_name, 0.5)
 
 
 def _extract_retry_seconds(err_msg: str) -> float:
@@ -76,56 +73,8 @@ class ProviderResult:
     elapsed_sec: float
 
 
-class GeminiProvider:
-    """Google Gemini via the official google-genai SDK (the new SDK)."""
-
-    name = "gemini"
-    _client = None
-
-    def __init__(self):
-        if not settings.gemini_api_key:
-            raise LLMError("GEMINI_API_KEY not set")
-        self.model = settings.gemini_model
-
-    def _ensure_client(self):
-        if self._client is None:
-            try:
-                from google import genai
-            except ImportError as exc:
-                raise LLMError(
-                    "google-genai not installed. Run: pip install google-genai"
-                ) from exc
-            # New SDK: Client auto-reads GEMINI_API_KEY env var,
-            # but we pass explicitly for clarity and to match our settings.
-            self._client = genai.Client(api_key=settings.gemini_api_key)
-        return self._client
-
-    def generate(self, prompt: str, system: Optional[str] = None) -> str:
-        client = self._ensure_client()
-        try:
-            from google import genai
-            from google.genai import types as gtypes
-
-            # New SDK uses a config object for system instruction + params
-            config = gtypes.GenerateContentConfig(
-                system_instruction=system if system else None,
-                temperature=0.2,
-            )
-            resp = client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=config,
-            )
-            return resp.text
-        except Exception as exc:
-            msg = str(exc).lower()
-            if any(k in msg for k in ("quota", "rate", "429", "resource", "not found", "404")):
-                raise QuotaExhaustedError(f"Gemini quota/model error: {exc}") from exc
-            raise LLMError(f"Gemini error: {exc}") from exc
-
-
 class OpenAICompatProvider:
-    """OpenAI-compatible provider (works with OpenAI, Groq, Together, OpenRouter, Ollama...)."""
+    """OpenAI-compatible provider (ZenMux, OpenAI, Groq, OpenRouter, etc.)."""
 
     name = "openai-compat"
     _client = None
@@ -193,11 +142,6 @@ class LLMRouter:
 
         # Available provider constructors, keyed by name
         factories = {
-            "gemini": lambda: (
-                GeminiProvider()
-                if settings.gemini_api_key
-                else (_ for _ in ()).throw(LLMError("GEMINI_API_KEY not set"))
-            ),
             "openai-compat": lambda: (
                 OpenAICompatProvider()
                 if settings.openai_api_key
@@ -214,22 +158,18 @@ class LLMRouter:
             try:
                 provider = factories[name]()
                 self.providers.append(provider)
-                if name == "gemini":
-                    log.info("LLM provider registered: Gemini (%s)", settings.gemini_model)
-                else:
-                    base = settings.openai_base_url or "api.openai.com"
-                    log.info("LLM provider registered: OpenAI-compat (%s @ %s)",
-                             settings.openai_model, base)
+                base = settings.openai_base_url or "api.openai.com"
+                log.info("LLM provider registered: OpenAI-compat (%s @ %s)",
+                         settings.openai_model, base)
             except LLMError as exc:
                 log.warning("%s not available: %s", name, exc)
 
         if not self.providers:
             raise LLMError(
-                "No LLM provider available. Configure GEMINI_API_KEY and/or "
-                "OPENAI_API_KEY in your .env file."
+                "No LLM provider available. Set OPENAI_API_KEY in your .env file."
             )
 
-        log.info("Failover chain: %s", " → ".join(p.name for p in self.providers))
+        log.info("Failover chain: %s", " -> ".join(p.name for p in self.providers))
 
     def _pace(self, provider_name: str = "openai-compat") -> None:
         """Sleep just enough to stay under this provider's rate limit."""
@@ -276,7 +216,7 @@ class LLMRouter:
                         time.sleep(retry_after + 1)
                         self._last_call_ts = time.time()
                         continue
-                    log.warning("Quota exhausted on %s → falling through. (%s)",
+                    log.warning("Quota exhausted on %s -> falling through. (%s)",
                                 provider.name, exc)
                     last_error = exc
                     break  # go to next provider
