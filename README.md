@@ -1,25 +1,25 @@
 # 📜 Contract Analysis & Legal RAG Pipeline (CUAD)
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-contract--analysis--pipeline.onrender.com-0058be?style=for-the-badge&logo=render)](https://contract-analysis-pipeline.onrender.com/)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-legal--contract--pipeline--ynop.onrender.com-0058be?style=for-the-badge&logo=render)](https://legal-contract-pipeline-ynop.onrender.com/)
 
 A production-grade, LLM-powered contract intelligence system that reads commercial contracts, extracts key legal clauses, and powers an interactive AI Legal Assistant with verifiable verbatim citations — built on the [CUAD dataset](https://www.atticusprojectai.org/cuad) (510 contracts, 13,000+ annotations).
 
 ---
 
-## ✨ Features
+## Features
 
-- 📑 **Title-Based Legal Chunking**: Document-aware chunker that partitions contracts by natural legal boundaries (`ARTICLE`, `SECTION`, `CLAUSE`, numbered headings, and exhibits).
-- 🧠 **Primary LLM Engine**: Powered by **ZenMux** (`deepseek/deepseek-v4.1-flash`) via an OpenAI-compatible gateway for high speed and low latency.
-- ⚡ **Neural & Offline Embeddings**: Vectorized with **ZenMux** (`openai/text-embedding-3-small` at 768-D) with automatic fallback to a local deterministic hash vectorizer.
-- 🛡️ **Dual-Representation RAG ("Way B" Architecture)**:
+- **Title-Based Legal Chunking**: Document-aware chunker that partitions contracts by natural legal boundaries (`ARTICLE`, `SECTION`, `CLAUSE`, numbered headings, and exhibits).
+- **Primary LLM Engine**: Powered by **ZenMux** (`deepseek/deepseek-v4.1-flash`) via an OpenAI-compatible gateway for high speed and low latency.
+- **Neural & Offline Embeddings**: Vectorized with **ZenMux** (`openai/text-embedding-3-small` at 768-D) with automatic fallback to a local deterministic hash vectorizer.
+- **Dual-Representation RAG ("Way B" Architecture)**:
   - **Vector Search on Summaries**: Indexes a concise 2–3 sentence legal summary for maximum vector retrieval accuracy.
   - **Generation from Verbatim Text**: Pulls the **100% original, unedited raw contract text** into the prompt, eliminating hallucinations.
-- ✍️ **Automated Clause Extraction**: Extracts **Termination**, **Confidentiality**, and **Liability** clauses into structured JSON & CSV formats.
-- 🌐 **Interactive Web UI**: Modern FastAPI application featuring:
+- **Automated Clause Extraction**: Extracts **Termination**, **Confidentiality**, and **Liability** clauses into structured JSON & CSV formats.
+- **Interactive Web UI**: Modern FastAPI application featuring:
   - **Browse Contracts**: Filter and inspect extracted clauses across contract portfolios.
   - **AI Legal Assistant**: Ask legal questions with expandable verbatim source citations.
-- 🧪 **16 Passing Unit Tests**: Fully validated suite covering chunking, normalization, embeddings, ChromaDB, and FastAPI endpoints.
-- 🔒 **Zero-Leak Security**: Secrets live strictly in `.env` (git-ignored); zero API keys are ever logged.
+- **16 Passing Unit Tests**: Fully validated suite covering chunking, normalization, embeddings, ChromaDB, and FastAPI endpoints.
+- **Zero-Leak Security**: Secrets live strictly in `.env` (git-ignored); zero API keys are ever logged.
 
 ---
 
